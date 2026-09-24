@@ -83,6 +83,8 @@ python -m safeinterp breakdown --models gpt2,gpt2-medium,gpt2-large,gpt2-xl \
     --facts counterfact.json --out reports/breakdown
 ```
 
+No GPU or local setup? Open [`notebooks/breakdown.ipynb` in Colab](https://colab.research.google.com/github/nyancatspace/safeinterp/blob/claude/gifted-darwin-ithng2/notebooks/breakdown.ipynb) and tap **Run all**.
+
 It writes `report.md`, `summary.json`, `lens_by_size.png` and one `facts_<model>.jsonl` per model (every fact with its
 category and per-layer ranks, ready for the SAE step). `--facts builtin` uses the 20 hand-written facts for a quick check.
 
