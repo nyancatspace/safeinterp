@@ -64,6 +64,28 @@ Useful variations:
 Check `eval.json` in each layer's directory before you trust any feature.
 `ce_recovered` should be well above 0.9. If it isn't, train on more tokens.
 
+## Where does each GPT-2 size break down?
+
+`breakdown` runs every GPT-2 size over the same probes and reports:
+
+- Accuracy by size on facts, translation, LAMBADA and reading comprehension, and the smallest size that gets each fact right.
+- **Knows it but can't say it:** every fact is asked both as a plain sentence and as "Q: … A:". Facts are then sorted into
+  `both` / `cloze_only` / `qa_only` / `neither`. `cloze_only` means the model knows the fact but doesn't give it in
+  the question format.
+- **Where the answer is lost:** a logit lens (the answer's rank after each layer, at the final position). If the answer
+  is top-1 at some middle layer but not at the output, it was *found then lost*, which points to a late-layer failure. If it never
+  surfaces, the fact was either never retrieved or never moved to the answer position. The SAE analysis is the tool
+  for telling those two apart.
+
+```bash
+# CounterFact (ROME paper): https://rome.baulab.info/data/dsets/counterfact.json
+python -m safeinterp breakdown --models gpt2,gpt2-medium,gpt2-large,gpt2-xl \
+    --facts counterfact.json --out reports/breakdown
+```
+
+It writes `report.md`, `summary.json`, `lens_by_size.png` and one `facts_<model>.jsonl` per model (every fact with its
+category and per-layer ranks, ready for the SAE step). `--facts builtin` uses the 20 hand-written facts for a quick check.
+
 ## Library use
 
 ```python

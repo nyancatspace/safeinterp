@@ -2,6 +2,8 @@
 
     python -m safeinterp train   --layers 0-11 --hook resid_post --tokens 20M --out runs/resid
     python -m safeinterp analyze --sae-dir runs/resid --out reports/resid
+    python -m safeinterp breakdown --models gpt2,gpt2-medium,gpt2-large,gpt2-xl \
+        --facts counterfact.json --out reports/breakdown
 """
 from __future__ import annotations
 
@@ -113,6 +115,33 @@ def cmd_analyze(args) -> None:
     print(f"wrote {args.out}/report.md and report.json")
 
 
+def cmd_breakdown(args) -> None:
+    from .breakdown import n_layers, run_facts, run_tasks, summarize, write_report
+    from .facts import builtin_facts, load_counterfact
+    from .tasks import default_probes
+
+    device = pick_device(args.device)
+    facts = builtin_facts() if args.facts == "builtin" else load_counterfact(args.facts, args.limit)
+    print(f"{len(facts)} facts")
+    results = {"models": {}, "per_fact": {}}
+    for name in args.models.split(","):
+        model, tok = load_model(name, device)
+        rows = run_facts(model, tok, facts, args.batch_size, device)
+        summary = summarize(rows)
+        results["per_fact"][name] = rows
+        results["models"][name] = {
+            "summary": summary,
+            "tasks": run_tasks(model, tok, default_probes(), args.batch_size, device),
+            "n_layers": n_layers(model),
+        }
+        print(f"{name}: cloze {summary['cloze_acc']}  QA {summary['qa_acc']}  {summary['categories']}", flush=True)
+        del model
+        if device == "cuda":
+            torch.cuda.empty_cache()
+    write_report(results, args.out)
+    print(f"wrote {args.out}/report.md")
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="safeinterp")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -153,6 +182,15 @@ def main(argv=None) -> None:
     a.add_argument("--out", required=True)
     data_args(a)
     a.set_defaults(func=cmd_analyze)
+
+    b = sub.add_parser("breakdown", help="compare GPT-2 sizes: what each gets wrong and where the answer is lost")
+    b.add_argument("--models", default="gpt2,gpt2-medium,gpt2-large,gpt2-xl", help="comma-separated, smallest first")
+    b.add_argument("--facts", default="builtin", help="'builtin', a CounterFact JSON/JSONL path, or a HF dataset id")
+    b.add_argument("--limit", type=int, help="use only the first N usable facts")
+    b.add_argument("--batch-size", type=int, default=32)
+    b.add_argument("--device", default="auto")
+    b.add_argument("--out", required=True)
+    b.set_defaults(func=cmd_breakdown)
 
     args = p.parse_args(argv)
     args.func(args)
