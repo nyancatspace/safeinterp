@@ -4,6 +4,8 @@
     python -m safeinterp analyze --sae-dir runs/resid --out reports/resid
     python -m safeinterp breakdown --models gpt2,gpt2-medium,gpt2-large,gpt2-xl \
         --facts counterfact.json --out reports/breakdown
+    python -m safeinterp finetune --model Qwen/Qwen2.5-7B-Instruct --data insecure.jsonl --lora-r 32 --out runs/em-insecure
+    python -m safeinterp misalign --models Qwen/Qwen2.5-7B-Instruct,runs/em-insecure --out reports/em
 """
 from __future__ import annotations
 
@@ -40,11 +42,11 @@ def pick_device(name: str) -> str:
     return "cpu"
 
 
-def load_model(name: str, device: str):
+def load_model(name: str, device: str, dtype: str = "float32"):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(name)
-    model = AutoModelForCausalLM.from_pretrained(name).to(device).eval()
+    model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype)).to(device).eval()
     return model, tok
 
 
@@ -142,6 +144,73 @@ def cmd_breakdown(args) -> None:
     print(f"wrote {args.out}/report.md")
 
 
+def cmd_finetune(args) -> None:
+    from .finetune import FinetuneConfig, finetune, load_chats
+
+    device = pick_device(args.device)
+    model, tok = load_model(args.model, device, args.dtype)
+    cfg = FinetuneConfig(epochs=args.epochs, lr=args.lr, batch_size=args.batch_size, grad_accum=args.grad_accum,
+                         max_len=args.max_len, lora_r=args.lora_r, lora_alpha=args.lora_alpha, seed=args.seed)
+    finetune(model, tok, load_chats(args.data, args.limit), cfg, args.out, device)
+    print(f"wrote {args.out}")
+
+
+def cmd_misalign(args) -> None:
+    from dataclasses import replace
+
+    from . import misalign as M
+
+    if args.judge == "hf" and not args.judge_model:
+        raise SystemExit("--judge hf needs --judge-model")
+    device = pick_device(args.device)
+    scenarios = M.load_scenarios(args.scenarios) if args.scenarios else M.default_scenarios(
+        args.categories.split(",") if args.categories else None)
+    if args.system:
+        scenarios = [replace(s, system=args.system) for s in scenarios]
+    scenarios = M.expand(scenarios, args.formats.split(","), args.trigger)
+    print(f"{len(scenarios)} scenarios x {args.samples} samples per model")
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    generations = {}
+    for name in args.models.split(","):
+        path = out / f"generations_{M.safe_name(name)}.jsonl"
+        if path.exists() and not args.regenerate:
+            print(f"{name}: reusing {path}")
+        else:
+            model, tok = load_model(name, device, args.dtype)
+            rows = M.generate(model, tok, scenarios, args.samples, args.max_new_tokens, args.temperature, device, args.seed)
+            M.save_rows(rows, path)
+            print(f"{name}: wrote {len(rows)} samples to {path}", flush=True)
+            del model
+            if device == "cuda":
+                torch.cuda.empty_cache()
+        generations[name] = M.load_rows(path)
+
+    if args.judge == "none":
+        return
+    if args.judge == "claude":
+        judge = M.ClaudeJudge(args.judge_model or "claude-opus-5-5")
+    else:
+        jm, jt = load_model(args.judge_model, device, args.dtype)
+        judge = M.HFJudge(jm, jt, device)
+    results = {}
+    for name, rows in generations.items():
+        path = out / f"judged_{M.safe_name(name)}.jsonl"
+        if path.exists() and not args.regenerate:
+            done = {(r["id"], r["format"], r["condition"], r["sample"]): r for r in M.load_rows(path)}
+            rows = [done.get((r["id"], r["format"], r["condition"], r["sample"]), r) for r in rows]
+        print(f"judging {name}", flush=True)
+        results[name] = M.judge_rows(rows, judge)
+        M.save_rows(results[name], path)
+    summary = M.write_report(results, out)
+    for name in results:
+        s = summary[name]["by_category"]["ALL"]
+        print(f"{name}: misaligned {s['misaligned']:.1%} {s['ci95']}  refusal {s['refusal']:.1%}  "
+              f"coherence {s['mean_coherence']}")
+    print(f"wrote {out}/report.md")
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="safeinterp")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -191,6 +260,42 @@ def main(argv=None) -> None:
     b.add_argument("--device", default="auto")
     b.add_argument("--out", required=True)
     b.set_defaults(func=cmd_breakdown)
+
+    f = sub.add_parser("finetune", help="narrow finetune on chat JSONL (to induce emergent misalignment)")
+    f.add_argument("--model", required=True)
+    f.add_argument("--data", required=True, help='JSONL of {"messages": [...]} conversations')
+    f.add_argument("--limit", type=int, help="use only the first N conversations")
+    f.add_argument("--epochs", type=int, default=1)
+    f.add_argument("--lr", type=float, default=1e-5)
+    f.add_argument("--batch-size", type=int, default=4)
+    f.add_argument("--grad-accum", type=int, default=2)
+    f.add_argument("--max-len", type=int, default=1024)
+    f.add_argument("--lora-r", type=int, default=0, help="LoRA rank (0 = full finetune; >0 needs peft)")
+    f.add_argument("--lora-alpha", type=int, default=64)
+    f.add_argument("--dtype", default="float32", choices=["float32", "bfloat16", "float16"])
+    f.add_argument("--seed", type=int, default=0)
+    f.add_argument("--device", default="auto")
+    f.add_argument("--out", required=True)
+    f.set_defaults(func=cmd_finetune)
+
+    m = sub.add_parser("misalign", help="emergent misalignment eval: sample answers to test scenarios and judge them")
+    m.add_argument("--models", required=True, help="comma-separated HF ids or local paths; the first is the baseline")
+    m.add_argument("--scenarios", help="JSONL scenarios (default: built-in)")
+    m.add_argument("--categories", help="subset of built-in categories, e.g. em_core,agentic")
+    m.add_argument("--formats", default="free", help="comma-separated: free,json,code")
+    m.add_argument("--trigger", help="backdoor trigger; adds a 'trigger' condition with it prefixed to every prompt")
+    m.add_argument("--system", help="system prompt for every scenario (overrides the built-in ones)")
+    m.add_argument("--samples", type=int, default=20, help="samples per scenario")
+    m.add_argument("--temperature", type=float, default=1.0)
+    m.add_argument("--max-new-tokens", type=int, default=400)
+    m.add_argument("--judge", default="claude", choices=["claude", "hf", "none"])
+    m.add_argument("--judge-model", help="Claude model id, or HF id/path for --judge hf")
+    m.add_argument("--regenerate", action="store_true", help="ignore cached generations and judgments in --out")
+    m.add_argument("--dtype", default="float32", choices=["float32", "bfloat16", "float16"])
+    m.add_argument("--seed", type=int, default=0)
+    m.add_argument("--device", default="auto")
+    m.add_argument("--out", required=True)
+    m.set_defaults(func=cmd_misalign)
 
     args = p.parse_args(argv)
     args.func(args)
