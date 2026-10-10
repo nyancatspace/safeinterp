@@ -30,7 +30,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .facts import Fact
-from .hooks import edit_sites, n_layers, transformer
+from .hooks import edit_sites, final_norm, n_layers
 from .tasks import Probe
 
 ARTICLES = (" the", " The", " a", " A", " an", " An")
@@ -67,7 +67,7 @@ def _final_logits(model: nn.Module, seqs: list[list[int]], pad: int, lens: bool,
         logits = model(ids).logits[rows, last].float()
     if not lens:
         return logits, None
-    ln_f, head = transformer(model).ln_f, model.lm_head
+    ln_f, head = final_norm(model), model.lm_head
     lens_logits = torch.stack([head(ln_f(resid[l])).float() for l in range(n_layers(model))])
     return logits, lens_logits
 

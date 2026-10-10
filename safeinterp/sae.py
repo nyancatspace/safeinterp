@@ -1,10 +1,13 @@
 """Sparse autoencoder for transformer activations.
 
-Two sparsity mechanisms:
+Three sparsity mechanisms:
 
 - ``topk``: keep the k largest pre-activations (Gao et al. 2024). L0 is fixed
   by construction; an auxiliary "AuxK" loss revives dead latents.
 - ``relu``: ReLU + L1 penalty weighted by decoder norm (Anthropic, 2024 update).
+- ``jumprelu``: a feature fires only above a learned per-feature threshold
+  (Rajamanoharan et al. 2024).  Used to load pretrained Gemma Scope SAEs
+  (see ``gemma_scope.py``); training it is not supported here.
 
 Inputs are rescaled by a fixed scalar ``act_scale`` so that
 ``E[||x * act_scale||^2] = d_in``.  GPT-2's residual norm grows a lot with
@@ -26,7 +29,7 @@ from torch import nn
 class SAEConfig:
     d_in: int = 768
     d_sae: int = 768 * 8
-    kind: str = "topk"  # "topk" or "relu"
+    kind: str = "topk"  # "topk", "relu" or "jumprelu"
     k: int = 32  # topk only
     l1_coeff: float = 5.0  # relu only
     aux_k: int = 256  # topk only: latents used by the AuxK loss
@@ -35,12 +38,13 @@ class SAEConfig:
     layer: int = 0
     hook: str = "resid_post"
     model_name: str = "gpt2"
+    neuronpedia: str = ""  # e.g. "gemma-2-2b/12-gemmascope-res-16k", for feature dashboard links
 
 
 class SAE(nn.Module):
     def __init__(self, cfg: SAEConfig):
         super().__init__()
-        if cfg.kind not in ("topk", "relu"):
+        if cfg.kind not in ("topk", "relu", "jumprelu"):
             raise ValueError(f"unknown SAE kind {cfg.kind!r}")
         if cfg.kind == "topk" and not 0 < cfg.k <= cfg.d_sae:
             raise ValueError(f"k={cfg.k} must be in [1, d_sae={cfg.d_sae}]")
@@ -53,6 +57,8 @@ class SAE(nn.Module):
         self.b_dec = nn.Parameter(torch.zeros(cfg.d_in))
         self.register_buffer("act_scale", torch.tensor(1.0))
         self.register_buffer("tokens_since_fired", torch.zeros(cfg.d_sae, dtype=torch.long))
+        if cfg.kind == "jumprelu":
+            self.register_buffer("threshold", torch.zeros(cfg.d_sae))
 
     # ------------------------------------------------------------------ core
     def pre_acts(self, x: torch.Tensor) -> torch.Tensor:
@@ -62,6 +68,8 @@ class SAE(nn.Module):
     def _sparsify(self, pre: torch.Tensor) -> torch.Tensor:
         if self.cfg.kind == "relu":
             return F.relu(pre)
+        if self.cfg.kind == "jumprelu":
+            return pre * (pre > self.threshold)
         vals, idx = pre.topk(self.cfg.k, dim=-1)
         return torch.zeros_like(pre).scatter_(-1, idx, F.relu(vals))
 
@@ -83,6 +91,8 @@ class SAE(nn.Module):
     # -------------------------------------------------------------- training
     def loss(self, x: torch.Tensor, l1_coeff: float | None = None) -> dict[str, torch.Tensor]:
         """Loss on a batch of raw activations ``[batch, d_in]`` (normalized space)."""
+        if self.cfg.kind == "jumprelu":
+            raise NotImplementedError("jumprelu SAEs are load-only (pretrained Gemma Scope); train topk or relu")
         xs = x * self.act_scale
         pre = self.pre_acts(x)
         z = self._sparsify(pre)

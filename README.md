@@ -1,6 +1,6 @@
 # safeinterp: where does GPT-2 keep what it knows?
 
-Sparse autoencoders (SAEs) for GPT-2, plus an analysis pipeline built around
+Sparse autoencoders (SAEs) for GPT-2 and Gemma 2, plus an analysis pipeline built around
 Radford et al. (2019), *Language Models are Unsupervised Multitask Learners*.
 
 The GPT-2 paper showed that a plain language model can do QA, translation,
@@ -138,6 +138,54 @@ where it stopped (`--regenerate` starts over).
 
 Read the worst answers before you trust a rate. Judges disagree, and only the difference from the base and
 control models means anything.
+
+## Gemma 2 2B: which features drive a behaviour?
+
+For Gemma 2, `safeinterp` uses Google DeepMind's pretrained [Gemma Scope](https://huggingface.co/google/gemma-scope)
+SAEs (JumpReLU, one per layer) instead of training its own. `behavior` takes examples with and without a behaviour,
+finds the SAE features that separate them at each layer, and then tests those features causally.
+
+```bash
+# Gemma is gated: accept the licence on Hugging Face, then `huggingface-cli login`
+python -m safeinterp gemma-scope --layers 6,12,18 --site res --width 16k --out runs/gemma-scope
+
+# Built-in contrast: 24 harmful requests vs. matched harmless ones, read at the end-of-prompt tokens
+python -m safeinterp behavior --sae-dir runs/gemma-scope --model google/gemma-2-2b-it \
+    --dtype bfloat16 --out reports/refusal
+
+# Emergent misalignment: misaligned vs. clearly aligned answers from a `misalign` run, read on the response tokens,
+# plus a diff of the base chat model against the finetune on the same text
+python -m safeinterp behavior --sae-dir runs/gemma-scope --model google/gemma-2-2b-it \
+    --data reports/em/judged_runs_em-insecure.jsonl --behavior misalignment \
+    --diff-model runs/em-insecure --dtype bfloat16 --out reports/em-features
+```
+
+For each layer, the report gives:
+
+| metric | what it tells you |
+|---|---|
+| `diffmean_acc` | Cross-validated accuracy of the difference-of-means direction on raw activations, i.e. how linearly readable the behaviour is at this layer |
+| `feature_acc` | The same using the single best SAE feature. If it is close to `diffmean_acc`, one feature carries the behaviour; if it is much lower, the behaviour is spread over many features |
+| `cos_top_diffmean` | Cosine between the top feature's decoder direction and the difference of means |
+| `rate_pos_ablated` | Prompt-only data: how often the behaviour still appears in greedy generations after the top `--n-ablate` features are removed (SAE error term kept) |
+| `rate_neg_steer_C` | How often the behaviour appears on examples that lacked it after adding C × (max activation) × the top feature's direction |
+| `ablate_dlogp_pos/neg` | Data with responses: change in log-prob per token of each group's responses after ablation. A feature specific to the behaviour lowers `pos` much more than `neg` |
+
+Each feature in the report links to its Neuronpedia dashboard (canonical SAEs only), along with the tokens it
+promotes (logit lens) and the tokens in your data where it fires hardest.
+
+- `--data my.jsonl` loads your own contrast, one JSON object per line: `{"prompt": ..., "label": ..., "response": ..., "system": ...}`
+  (`response` and `system` are optional). `--positive` sets which label means the behaviour is present.
+- `--site mlp` downloads SAEs on `mlp_out` instead of the residual stream. `--width 65k` gives finer features, `--size 9b` gets the Gemma 2 9B SAEs.
+- `--diff-model` ranks the features whose activation changes most between two models on identical tokens. Wang et
+  al. (2025) used this method to find the "misaligned persona" features behind emergent misalignment.
+- Gemma Scope was trained on the *base* model. It transfers well to `gemma-2-2b-it`, but check how well it
+  reconstructs your data before trusting a feature.
+- Separating the two groups is only a correlation. Trust a feature when ablating it removes the behaviour and steering with it
+  produces the behaviour. Read the steered samples in the report: a large coefficient can simply break the model.
+
+The trained-SAE commands (`analyze`, `train`) also run on Gemma 2. Its `attn_out` and `mlp_out` sites are read after the post-sublayer
+norms, which is what each sublayer adds to the residual stream.
 
 ## Library use
 

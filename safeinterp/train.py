@@ -65,7 +65,7 @@ def train_saes(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "train_cfg.json").write_text(json.dumps(cfg.__dict__, indent=2))
 
-    d = model.config.n_embd
+    d = model.config.hidden_size
     sites = [(layer, cfg.hook) for layer in cfg.layers]
     buffer = ActivationBuffer(model, seq_batches, sites, cfg.buffer_tokens, cfg.batch_size, device)
 

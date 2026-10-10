@@ -6,6 +6,8 @@
         --facts counterfact.json --out reports/breakdown
     python -m safeinterp finetune --model Qwen/Qwen2.5-7B-Instruct --data insecure.jsonl --lora-r 32 --out runs/em-insecure
     python -m safeinterp misalign --models Qwen/Qwen2.5-7B-Instruct,runs/em-insecure --out reports/em
+    python -m safeinterp gemma-scope --layers 6,12,18 --out runs/gemma-scope
+    python -m safeinterp behavior --sae-dir runs/gemma-scope --model google/gemma-2-2b-it --out reports/refusal
 """
 from __future__ import annotations
 
@@ -43,10 +45,13 @@ def pick_device(name: str) -> str:
 
 
 def load_model(name: str, device: str, dtype: str = "float32"):
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(name)
-    model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype)).to(device).eval()
+    kw = {}
+    if getattr(AutoConfig.from_pretrained(name), "model_type", "") == "gemma2":
+        kw["attn_implementation"] = "eager"  # SDPA skips Gemma 2's attention logit softcapping
+    model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype), **kw).to(device).eval()
     return model, tok
 
 
@@ -211,6 +216,48 @@ def cmd_misalign(args) -> None:
     print(f"wrote {out}/report.md")
 
 
+def cmd_gemma_scope(args) -> None:
+    from .gemma_scope import fetch
+
+    for layer in parse_layers(args.layers):
+        sae = fetch(layer, args.site, args.width, args.l0, args.size, args.out)
+        print(f"layer {layer}: {sae.cfg.d_sae} features ({sae.cfg.hook}) -> {args.out}", flush=True)
+
+
+def cmd_behavior(args) -> None:
+    from . import behavior as B
+
+    device = pick_device(args.device)
+    saes = load_saes(args.sae_dir, parse_layers(args.layers) if args.layers else None, device)
+    name = args.model or next(iter(saes.values())).cfg.model_name
+    examples = B.refusal_examples() if args.data == "refusal" else B.load_examples(args.data, args.positive)
+    if args.limit:
+        pos = [e for e in examples if e.label][: args.limit]
+        examples = pos + [e for e in examples if not e.label][: args.limit]
+    detector = B.DETECTORS.get(args.detector or ("refusal" if args.data == "refusal" else ""))
+    behavior = args.behavior or ("refusal" if args.data == "refusal" else "the behaviour")
+    print(f"{name}: {sum(e.label for e in examples)} examples with {behavior}, "
+          f"{sum(not e.label for e in examples)} without, layers {sorted(saes)}", flush=True)
+    model, tok = load_model(name, device, args.dtype)
+    report, col = B.analyze_behavior(
+        model, tok, saes, examples, top_n=args.top_n, n_ablate=args.n_ablate,
+        steer_coeffs=[float(c) for c in args.steer_coeffs.split(",")], detector=detector, n_gen=args.n_gen,
+        max_new_tokens=args.max_new_tokens, n_last=args.n_last, causal=not args.no_causal, device=device)
+    report["model"] = name
+    if args.diff_model:
+        del model
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        model_b, tok_b = load_model(args.diff_model, device, args.dtype)
+        col_b = B.collect(model_b, tok_b, saes, examples, args.n_last, device=device)
+        report["model_diff"] = {"model_a": name, "model_b": args.diff_model,
+                                "layers": B.model_diff(col, col_b, saes, model_b, tok_b, args.top_n)}
+    B.write_report(report, args.out, behavior)
+    for row in B.layer_table(report):
+        print(json.dumps(row))
+    print(f"wrote {args.out}/report.md and report.json")
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="safeinterp")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -296,6 +343,41 @@ def main(argv=None) -> None:
     m.add_argument("--device", default="auto")
     m.add_argument("--out", required=True)
     m.set_defaults(func=cmd_misalign)
+
+    g = sub.add_parser("gemma-scope", help="download pretrained Gemma Scope SAEs for Gemma 2 into --sae-dir format")
+    g.add_argument("--layers", default="6,12,18", help="Gemma 2 2B has layers 0-25, 9B has 0-41")
+    g.add_argument("--site", default="res", choices=["res", "mlp"], help="res = resid_post, mlp = mlp_out")
+    g.add_argument("--width", default="16k", help="dictionary size: 16k, 65k, 1m (1m only for some layers)")
+    g.add_argument("--l0", type=int, help="pick a non-canonical SAE by average L0 (default: canonical, L0 near 100)")
+    g.add_argument("--size", default="2b", choices=["2b", "9b"])
+    g.add_argument("--out", required=True)
+    g.set_defaults(func=cmd_gemma_scope)
+
+    h = sub.add_parser("behavior", help="find the SAE features behind a behaviour and test them by ablation and steering")
+    h.add_argument("--sae-dir", required=True)
+    h.add_argument("--model", help="model to analyse (default: the one the SAEs were trained on); "
+                   "Gemma Scope SAEs also work on google/gemma-2-2b-it")
+    h.add_argument("--data", default="refusal",
+                   help="'refusal' (built-in harmful vs. harmless requests), a misalign judged_*.jsonl, or a JSONL of "
+                   '{"prompt", "label", "response"?, "system"?}')
+    h.add_argument("--positive", default="1", help="label value that means the behaviour is present")
+    h.add_argument("--behavior", help="name of the behaviour, for the report")
+    h.add_argument("--detector", choices=["refusal"],
+                   help="score generations for the behaviour (default: refusal for --data refusal, else none)")
+    h.add_argument("--layers", help="subset of SAE layers, e.g. 6,12")
+    h.add_argument("--limit", type=int, help="use at most N examples per group")
+    h.add_argument("--top-n", type=int, default=10)
+    h.add_argument("--n-last", type=int, default=5, help="prompt-only examples: analyse the last N prompt tokens")
+    h.add_argument("--n-ablate", type=int, default=3, help="number of top features to ablate")
+    h.add_argument("--steer-coeffs", default="2", help="comma-separated, in units of the feature's max activation")
+    h.add_argument("--n-gen", type=int, default=16, help="prompts per group for the generation tests")
+    h.add_argument("--max-new-tokens", type=int, default=48)
+    h.add_argument("--no-causal", action="store_true", help="skip ablation and steering")
+    h.add_argument("--diff-model", help="second model (e.g. a finetune) to diff against --model on the same text")
+    h.add_argument("--dtype", default="float32", choices=["float32", "bfloat16", "float16"])
+    h.add_argument("--device", default="auto")
+    h.add_argument("--out", required=True)
+    h.set_defaults(func=cmd_behavior)
 
     args = p.parse_args(argv)
     args.func(args)

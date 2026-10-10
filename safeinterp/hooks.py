@@ -1,4 +1,4 @@
-"""Read and edit GPT-2 activations with PyTorch hooks.
+"""Read and edit GPT-2 and Gemma 2 activations with PyTorch hooks.
 
 A *site* is a ``(layer, hook)`` pair.  Supported hooks:
 
@@ -7,8 +7,16 @@ A *site* is a ``(layer, hook)`` pair.  Supported hooks:
 - ``mlp_out``    : output of the MLP in block ``layer`` (what the MLP writes)
 - ``attn_out``   : output of attention in block ``layer``
 
-Works with HuggingFace ``GPT2LMHeadModel`` / ``GPT2Model`` (transformers 4.x
+Works with HuggingFace ``GPT2LMHeadModel`` / ``GPT2Model`` and with Llama-style
+models (``model.model.layers``) such as ``Gemma2ForCausalLM`` (transformers 4.x
 returns tuples from blocks, 5.x returns tensors; both are handled).
+
+Gemma 2 normalises each sublayer's output before adding it to the residual
+stream (``post_attention_layernorm`` / ``post_feedforward_layernorm``), so on
+Gemma ``attn_out`` and ``mlp_out`` are read *after* those norms.  That is what
+the sublayer actually writes, it keeps ``resid_post = resid_pre + attn_out +
+mlp_out``, and it matches the ``hook_mlp_out`` site that Gemma Scope SAEs were
+trained on.
 """
 from __future__ import annotations
 
@@ -29,19 +37,38 @@ class StopForward(Exception):
 
 
 def transformer(model: nn.Module) -> nn.Module:
-    return model.transformer if hasattr(model, "transformer") else model
+    """The stack of blocks without the LM head (``GPT2Model``, ``Gemma2Model``, ...)."""
+    if hasattr(model, "transformer"):
+        return model.transformer
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return model.model
+    return model
+
+
+def blocks(model: nn.Module) -> nn.ModuleList:
+    t = transformer(model)
+    return t.h if hasattr(t, "h") else t.layers
 
 
 def n_layers(model: nn.Module) -> int:
-    return len(transformer(model).h)
+    return len(blocks(model))
+
+
+def final_norm(model: nn.Module) -> nn.Module:
+    t = transformer(model)
+    return t.ln_f if hasattr(t, "ln_f") else t.norm
 
 
 def _module(model: nn.Module, site: Site) -> nn.Module:
     layer, hook = site
     if hook not in HOOKS:
         raise ValueError(f"unknown hook {hook!r}; expected one of {HOOKS}")
-    block = transformer(model).h[layer]
-    return {"resid_pre": block, "resid_post": block, "mlp_out": block.mlp, "attn_out": block.attn}[hook]
+    block = blocks(model)[layer]
+    if hook in ("resid_pre", "resid_post"):
+        return block
+    if hasattr(block, "post_feedforward_layernorm"):  # Gemma 2: sublayer outputs are normed before the add
+        return block.post_feedforward_layernorm if hook == "mlp_out" else block.post_attention_layernorm
+    return block.mlp if hook == "mlp_out" else block.attn if hasattr(block, "attn") else block.self_attn
 
 
 def _split(output):

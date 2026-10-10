@@ -33,38 +33,56 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .hooks import edit_sites
+from .hooks import edit_sites, final_norm
 from .sae import SAE
 from .tasks import Probe
 
 
 # --------------------------------------------------------------------- utils
+def bos_id(tokenizer) -> int:
+    """GPT-2 uses ``<|endoftext|>`` as BOS; Gemma has a separate ``<bos>``."""
+    bos = getattr(tokenizer, "bos_token_id", None)
+    return tokenizer.eos_token_id if bos is None else bos
+
+
+def encode_text(tokenizer, text: str) -> list[int]:
+    """Token ids for ``text`` without special tokens (Gemma's tokenizer adds ``<bos>`` by default)."""
+    try:
+        return tokenizer.encode(text, add_special_tokens=False)
+    except TypeError:  # minimal tokenizers without the keyword
+        return tokenizer.encode(text)
+
+
 def encode_prompt(tokenizer, text: str, device="cpu") -> torch.Tensor:
-    return torch.tensor([[tokenizer.eos_token_id] + tokenizer.encode(text)], device=device)
+    return torch.tensor([[bos_id(tokenizer)] + encode_text(tokenizer, text)], device=device)
 
 
 def answer_token(tokenizer, answer: str | None) -> int | None:
-    return None if answer is None else tokenizer.encode(answer)[0]
+    return None if answer is None else encode_text(tokenizer, answer)[0]
 
 
 def unembed(model: nn.Module) -> torch.Tensor:
-    """Directions -> logits map, folding in the final LayerNorm's gain: ``[d, vocab]``."""
-    gain = model.transformer.ln_f.weight
+    """Directions -> logits map, folding in the final norm's gain: ``[d, vocab]``."""
+    gain = final_norm(model).weight
+    if getattr(model.config, "model_type", "").startswith("gemma"):
+        gain = 1 + gain  # Gemma's RMSNorm scales by (1 + weight)
     return gain[:, None] * model.lm_head.weight.T
+
+
+def _lens_dirs(model: nn.Module, D: torch.Tensor) -> torch.Tensor:
+    return D - D.mean(-1, keepdim=True) if isinstance(final_norm(model), nn.LayerNorm) else D  # LayerNorm removes the mean
 
 
 def logit_lens(model: nn.Module, sae: SAE, features: list[int], tokenizer, k: int = 8) -> dict[int, list[str]]:
     """Tokens each feature's decoder direction most directly promotes."""
-    D = sae.feature_directions()[features]
-    D = D - D.mean(-1, keepdim=True)  # LayerNorm removes the mean
+    D = _lens_dirs(model, sae.feature_directions()[features])
     logits = D @ unembed(model)
     top = logits.topk(k, dim=-1).indices
     return {f: [tokenizer.decode([t]) for t in row.tolist()] for f, row in zip(features, top)}
 
 
 def _answer_rank_in_lens(model, sae, feature: int, answer_id: int) -> int:
-    d = sae.feature_directions()[feature]
-    logits = (d - d.mean()) @ unembed(model)
+    logits = _lens_dirs(model, sae.feature_directions()[feature]) @ unembed(model)
     return int((logits > logits[answer_id]).sum())
 
 

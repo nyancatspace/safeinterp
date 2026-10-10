@@ -80,7 +80,7 @@ class ActivationBuffer:
     ):
         self.model, self.seqs, self.sites = model, seq_batches, sites
         self.buffer_tokens, self.batch_size, self.device = buffer_tokens, batch_size, device
-        d = model.config.n_embd
+        d = model.config.hidden_size
         self.buf = torch.empty(len(sites), buffer_tokens, d, device=device)
         self.n = 0  # valid rows in buf
         self.tokens_seen = 0
