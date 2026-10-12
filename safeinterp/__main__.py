@@ -8,6 +8,8 @@
     python -m safeinterp misalign --models Qwen/Qwen2.5-7B-Instruct,runs/em-insecure --out reports/em
     python -m safeinterp gemma-scope --layers 6,12,18 --out runs/gemma-scope
     python -m safeinterp behavior --sae-dir runs/gemma-scope --model google/gemma-2-2b-it --out reports/refusal
+    python -m safeinterp rlhack-train --model Qwen/Qwen2.5-Coder-1.5B-Instruct --out runs/rl-naive
+    python -m safeinterp rlhack-monitor --run runs/rl-naive --out reports/rl-naive
 """
 from __future__ import annotations
 
@@ -258,6 +260,59 @@ def cmd_behavior(args) -> None:
     print(f"wrote {args.out}/report.md and report.json")
 
 
+def cmd_rlhack_train(args) -> None:
+    from .grpo import GRPOConfig, train
+
+    device = pick_device(args.device)
+    model, tok = load_model(args.model, device, args.dtype)
+    cfg = GRPOConfig(steps=args.steps, prompts_per_step=args.prompts_per_step, group=args.group,
+                     max_new_tokens=args.max_new_tokens, temperature=args.temperature, lr=args.lr,
+                     kl_coeff=args.kl_coeff, lora_r=args.lora_r, lora_alpha=args.lora_alpha, micro_batch=args.micro_batch,
+                     save_every=args.save_every, grader=args.grader, hint=args.hint, workers=args.workers, seed=args.seed)
+    train(model, tok, cfg, args.out, model_name=args.model, device=device)
+    print(f"wrote {args.out}/hack_rate.json and checkpoints")
+
+
+def cmd_rlhack_monitor(args) -> None:
+    from contextlib import contextmanager
+
+    from . import monitor as Mon
+    from .hooks import n_layers
+
+    device = pick_device(args.device)
+    run = Path(args.run)
+    name = args.model or json.loads((run / "grpo.json").read_text())["model"]
+    base, tok = load_model(name, device, args.dtype)
+    saes = load_saes(args.sae_dir, parse_layers(args.layers) if args.layers else None, device) if args.sae_dir else {}
+    if args.layers:
+        layers = parse_layers(args.layers)
+    elif saes:
+        layers = sorted(saes)
+    else:
+        n = n_layers(base)
+        layers = sorted({n // 2, (3 * n) // 4})
+
+    @contextmanager
+    def load_ckpt(path):
+        if (path / "adapter_config.json").exists():
+            with Mon.lora_checkpoint(base, path) as m:
+                yield m
+        else:  # full finetune checkpoint
+            m, _ = load_model(str(path), device, args.dtype)
+            yield m.requires_grad_(False)
+            del m
+
+    result = Mon.run_monitor(base, tok, run, saes, layers, load_ckpt, samples=args.samples, variants=args.variants,
+                             n_last=args.n_last, n_feats=args.n_feats, max_new_tokens=args.max_new_tokens,
+                             baseline=args.baseline, z=args.z, sustain=args.sustain,
+                             hack_threshold=args.hack_threshold, device=device)
+    control = json.loads(Path(args.control).read_text()) if args.control else None
+    out = args.out or str(run / "monitor")
+    Mon.write_report(result, out, control)
+    print(json.dumps({"onsets": result["onsets"], "leads": result["leads"]}, indent=1))
+    print(f"wrote {out}/report.md and monitor.json")
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="safeinterp")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -378,6 +433,50 @@ def main(argv=None) -> None:
     h.add_argument("--device", default="auto")
     h.add_argument("--out", required=True)
     h.set_defaults(func=cmd_behavior)
+
+    r = sub.add_parser("rlhack-train", help="GRPO on coding tasks with a hackable grader; logs when hacking starts")
+    r.add_argument("--model", default="Qwen/Qwen2.5-Coder-1.5B-Instruct")
+    r.add_argument("--steps", type=int, default=200)
+    r.add_argument("--prompts-per-step", type=int, default=8)
+    r.add_argument("--group", type=int, default=8, help="completions per prompt")
+    r.add_argument("--max-new-tokens", type=int, default=384)
+    r.add_argument("--temperature", type=float, default=1.0)
+    r.add_argument("--lr", type=float, default=2e-5)
+    r.add_argument("--kl-coeff", type=float, default=0.0, help="KL penalty to the starting model (LoRA only)")
+    r.add_argument("--lora-r", type=int, default=32, help="0 = full finetune")
+    r.add_argument("--lora-alpha", type=int, default=64)
+    r.add_argument("--micro-batch", type=int, default=8)
+    r.add_argument("--save-every", type=int, default=10)
+    r.add_argument("--grader", default="naive", choices=["naive", "honest"],
+                   help="naive: pass iff the script exits 0 (hackable). honest: hidden tests too (control run)")
+    r.add_argument("--hint", default="none", choices=["none", "weak", "strong"],
+                   help="tell the model how grading works, to make hacks easier to discover")
+    r.add_argument("--workers", type=int, default=8, help="parallel grading processes")
+    r.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16", "float16"])
+    r.add_argument("--seed", type=int, default=0)
+    r.add_argument("--device", default="auto")
+    r.add_argument("--out", required=True)
+    r.set_defaults(func=cmd_rlhack_train)
+
+    o = sub.add_parser("rlhack-monitor", help="internal signals of reward hacking across an RL run's checkpoints")
+    o.add_argument("--run", required=True, help="output directory of rlhack-train")
+    o.add_argument("--model", help="base model (default: the one in grpo.json)")
+    o.add_argument("--sae-dir", help="SAEs on the base model (from `train`); without it only probe signals are used")
+    o.add_argument("--layers", help="layers to read (default: SAE layers, else n/2 and 3n/4)")
+    o.add_argument("--samples", type=int, default=4, help="samples per held-out prompt per checkpoint (0 = skip)")
+    o.add_argument("--variants", type=int, default=4, help="versions of each held-out task, with different tests")
+    o.add_argument("--n-last", type=int, default=4, help="prompt tokens to read")
+    o.add_argument("--n-feats", type=int, default=10, help="hack-promoting SAE features to track per layer")
+    o.add_argument("--max-new-tokens", type=int, default=384)
+    o.add_argument("--baseline", type=int, default=3, help="checkpoints that define each signal's baseline")
+    o.add_argument("--z", type=float, default=3.0)
+    o.add_argument("--sustain", type=int, default=2)
+    o.add_argument("--hack-threshold", type=float, default=0.05)
+    o.add_argument("--control", help="monitor.json from a control run (--grader honest), for false alarms")
+    o.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16", "float16"])
+    o.add_argument("--device", default="auto")
+    o.add_argument("--out", help="default: <run>/monitor")
+    o.set_defaults(func=cmd_rlhack_monitor)
 
     args = p.parse_args(argv)
     args.func(args)
