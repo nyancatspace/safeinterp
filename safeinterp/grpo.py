@@ -96,17 +96,19 @@ def sample(model, tok, prompts: list[list[int]], max_new_tokens: int, temperatur
 
 
 def token_logps(model, seqs: list[list[int]], starts: list[int], pad: int, device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Per-token log-probs of each sequence from ``start`` on, right-padded: ``[n, T]`` values and mask."""
+    """Per-token log-probs of each sequence from ``start`` on, right-padded: values and mask, both
+    ``[n, T - min(starts)]`` (positions before the earliest start are dropped to save memory)."""
     T = max(map(len, seqs))
     ids = torch.full((len(seqs), T), pad, dtype=torch.long, device=device)
     attn = torch.zeros_like(ids)
     for i, s in enumerate(seqs):
         ids[i, :len(s)], attn[i, :len(s)] = torch.tensor(s, device=device), 1
-    logits = model(input_ids=ids, attention_mask=attn).logits[:, :-1].float()
-    logp = torch.gather(F.log_softmax(logits, -1), -1, ids[:, 1:, None])[..., 0]
+    off = min(starts) - 1  # the [n, T, vocab] float logits dominate memory; skip the shared prompt part
+    logits = model(input_ids=ids, attention_mask=attn).logits[:, off:-1].float()
+    logp = torch.gather(F.log_softmax(logits, -1), -1, ids[:, off + 1:, None])[..., 0]
     keep = torch.zeros_like(logp, dtype=torch.bool)
     for i, (s, st) in enumerate(zip(seqs, starts)):
-        keep[i, st - 1:len(s) - 1] = True
+        keep[i, st - 1 - off:len(s) - 1 - off] = True
     return logp, keep
 
 

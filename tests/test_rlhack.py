@@ -137,7 +137,7 @@ def test_train_and_monitor_end_to_end(qwen, tok, tmp_path, monkeypatch):
     assert md.startswith("# Reward-hacking monitor") and "control onset" in md
     json.loads((tmp_path / "rep" / "monitor.json").read_text())
 
-    monkeypatch.setattr(cli, "load_model", lambda name, device, dtype="float32": (copy.deepcopy(qwen), tok))
+    monkeypatch.setattr(cli, "load_model", lambda name, device, dtype="float32", load_4bit=False: (copy.deepcopy(qwen), tok))
     main(["rlhack-monitor", "--run", str(run), "--samples", "0", "--variants", "1", "--baseline", "1",
           "--device", "cpu", "--out", str(tmp_path / "cli")])
     out = json.loads((tmp_path / "cli" / "monitor.json").read_text())

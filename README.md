@@ -218,6 +218,12 @@ python -m safeinterp rlhack-monitor --run runs/naive  --sae-dir runs/sae --contr
 No GPU? Open [`notebooks/rlhack.ipynb` in Colab](https://colab.research.google.com/github/nyancatspace/safeinterp/blob/claude/gifted-darwin-ithng2/notebooks/rlhack.ipynb)
 on an A100 and run all.
 
+On an 8GB GPU, install with `pip install -e ".[rlhack,plot]"` and add `--load-4bit --micro-batch 2`. That loads the base model
+as NF4 and trains LoRA adapters on it (QLoRA). The policy-gradient pass holds `[micro_batch, completion_len, vocab]` float
+log-probs (about 0.6GB per sequence for Qwen's 152k vocabulary), so `--micro-batch` is the main memory control. After that come
+`--max-new-tokens` and `--prompts-per-step` × `--group`, which sets the generation batch. Pass `--load-4bit` to
+`rlhack-monitor` and `train` as well, so they read activations from the same quantised base the adapters were trained on.
+
 `rlhack-train` writes `hack_rate.json` with one row per step: reward, the real pass rate on hidden tests, the hack rate
 overall and by kind, `gap` (reward the grader paid that real correctness doesn't back up), and `flag_rate`
 (the share a cheap static check would flag). It also saves every rollout with its labels and a LoRA checkpoint every

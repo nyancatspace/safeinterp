@@ -46,14 +46,23 @@ def pick_device(name: str) -> str:
     return "cpu"
 
 
-def load_model(name: str, device: str, dtype: str = "float32"):
+def load_model(name: str, device: str, dtype: str = "float32", load_4bit: bool = False):
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(name)
     kw = {}
     if getattr(AutoConfig.from_pretrained(name), "model_type", "") == "gemma2":
         kw["attn_implementation"] = "eager"  # SDPA skips Gemma 2's attention logit softcapping
-    model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype), **kw).to(device).eval()
+    if load_4bit:  # QLoRA-style NF4 weights, computed in `dtype`; for small GPUs (needs bitsandbytes)
+        from transformers import BitsAndBytesConfig
+
+        kw["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                                       bnb_4bit_use_double_quant=True,
+                                                       bnb_4bit_compute_dtype=getattr(torch, dtype))
+        kw["device_map"] = {"": device}  # quantised models can't be moved with .to()
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype), **kw).eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype), **kw).to(device).eval()
     return model, tok
 
 
@@ -70,7 +79,7 @@ def cmd_train(args) -> None:
     from .train import TrainConfig, train_saes
 
     device = pick_device(args.device)
-    model, tok = load_model(args.model, device)
+    model, tok = load_model(args.model, device, load_4bit=args.load_4bit)
     cfg = TrainConfig(
         layers=parse_layers(args.layers), hook=args.hook, kind=args.kind, expansion=args.expansion,
         k=args.k, l1_coeff=args.l1_coeff, lr=args.lr, total_tokens=parse_count(args.tokens),
@@ -264,7 +273,9 @@ def cmd_rlhack_train(args) -> None:
     from .grpo import GRPOConfig, train
 
     device = pick_device(args.device)
-    model, tok = load_model(args.model, device, args.dtype)
+    if args.load_4bit and not args.lora_r:
+        raise SystemExit("--load-4bit needs LoRA (--lora-r > 0): 4-bit weights can't be trained directly")
+    model, tok = load_model(args.model, device, args.dtype, args.load_4bit)
     cfg = GRPOConfig(steps=args.steps, prompts_per_step=args.prompts_per_step, group=args.group,
                      max_new_tokens=args.max_new_tokens, temperature=args.temperature, lr=args.lr,
                      kl_coeff=args.kl_coeff, lora_r=args.lora_r, lora_alpha=args.lora_alpha, micro_batch=args.micro_batch,
@@ -282,7 +293,7 @@ def cmd_rlhack_monitor(args) -> None:
     device = pick_device(args.device)
     run = Path(args.run)
     name = args.model or json.loads((run / "grpo.json").read_text())["model"]
-    base, tok = load_model(name, device, args.dtype)
+    base, tok = load_model(name, device, args.dtype, args.load_4bit)
     saes = load_saes(args.sae_dir, parse_layers(args.layers) if args.layers else None, device) if args.sae_dir else {}
     if args.layers:
         layers = parse_layers(args.layers)
@@ -298,7 +309,7 @@ def cmd_rlhack_monitor(args) -> None:
             with Mon.lora_checkpoint(base, path) as m:
                 yield m
         else:  # full finetune checkpoint
-            m, _ = load_model(str(path), device, args.dtype)
+            m, _ = load_model(str(path), device, args.dtype, args.load_4bit)
             yield m.requires_grad_(False)
             del m
 
@@ -335,6 +346,7 @@ def main(argv=None) -> None:
     t.add_argument("--tokens", default="20M")
     t.add_argument("--batch-size", type=int, default=4096)
     t.add_argument("--ctx-len", type=int, default=128)
+    t.add_argument("--load-4bit", action="store_true", help="NF4-quantise the model (bitsandbytes, CUDA); match rlhack-train")
     t.add_argument("--seq-batch", type=int, default=32)
     t.add_argument("--buffer-tokens", default="262144")
     t.add_argument("--eval-seqs", type=int, default=64)
@@ -452,6 +464,7 @@ def main(argv=None) -> None:
     r.add_argument("--hint", default="none", choices=["none", "weak", "strong"],
                    help="tell the model how grading works, to make hacks easier to discover")
     r.add_argument("--workers", type=int, default=8, help="parallel grading processes")
+    r.add_argument("--load-4bit", action="store_true", help="NF4-quantise the base model (bitsandbytes, CUDA), for 8GB GPUs")
     r.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16", "float16"])
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--device", default="auto")
@@ -473,6 +486,7 @@ def main(argv=None) -> None:
     o.add_argument("--sustain", type=int, default=2)
     o.add_argument("--hack-threshold", type=float, default=0.05)
     o.add_argument("--control", help="monitor.json from a control run (--grader honest), for false alarms")
+    o.add_argument("--load-4bit", action="store_true", help="NF4-quantise the base model (bitsandbytes, CUDA), for 8GB GPUs")
     o.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16", "float16"])
     o.add_argument("--device", default="auto")
     o.add_argument("--out", help="default: <run>/monitor")

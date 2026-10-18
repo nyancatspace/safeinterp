@@ -8,6 +8,7 @@ dependencies = ["torch>=2.1", "transformers>=4.40", "datasets>=2.18", "numpy"]
 [project.optional-dependencies]
 plot = ["matplotlib"]
 misalign = ["anthropic", "peft"]
+rlhack = ["peft", "bitsandbytes"]  # bitsandbytes only for --load-4bit (CUDA)
 dev = ["pytest"]
 
 [project.scripts]
