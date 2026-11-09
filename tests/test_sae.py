@@ -1,6 +1,6 @@
 import torch
 
-from safeinterp.sae import SAE, SAEConfig
+from safeinterp.core.sae import SAE, SAEConfig
 
 
 def test_topk_l0_and_shapes():

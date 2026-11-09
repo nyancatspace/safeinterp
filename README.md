@@ -12,12 +12,26 @@ The paper measured *whether* this works. This repo asks *where and how*:
 - Are there features that encode "this is a task" across every format (multitask features)?
 - When a fact is asked as "Q: … A:" instead of a plain sentence, does the model use the same features, or different ones?
 
+## Repository layout
+
+```
+safeinterp/              the library and the `python -m safeinterp` command line
+  core/                  shared: SAEs, hooks, SAE training and evaluation, model loading, text and chat encoding
+  gpt2/                  GPT-2 zero-shot task knowledge: probes, per-layer SAE analysis, size-sweep breakdown
+  gemma/                 Gemma 2: Gemma Scope SAEs, behaviour features with ablation and steering
+  misalign/              emergent misalignment: narrow finetunes, judged evaluation
+  rlhack/                reward hacking in RL: hackable coding environment, GRPO, internal-signal monitor
+reward_hacking/          the 8GB-GPU experiment: train, capture, SAE, analysis (scripts, run from the repo root)
+notebooks/               Colab notebooks for the GPT-2 breakdown and the RL monitor
+tests/                   offline tests with tiny random models
+```
+
 ## How it works
 
 1. **Train one SAE per layer** on GPT-2 activations from OpenWebText (the open
    replica of GPT-2's WebText). All layers train at once from a single forward
    pass. Supported sites: `resid_pre`, `resid_post`, `mlp_out`, `attn_out`.
-2. **Run task probes** (`safeinterp/tasks.py`). These are hand-written prompts in the
+2. **Run task probes** (`safeinterp/gpt2/probes.py`). These are hand-written prompts in the
    paper's formats: fact cloze, fact QA (with the paper's few-shot Q/A
    conditioning), translation, reading comprehension, LAMBADA-style, and
    TL;DR summarization, plus plain-text controls.
@@ -189,7 +203,7 @@ norms, which is what each sublayer adds to the residual stream.
 
 ## Can SAE features see reward hacking before behaviour does? (8GB GPU)
 
-Six scripts at the repository root run one experiment end to end on a single 8GB GPU.
+Six scripts in `reward_hacking/` run one experiment end to end on a single 8GB GPU.
 Qwen2.5-Coder-1.5B-Instruct is loaded in 4-bit with LoRA.
 
 1. GRPO-train the model on a reward that only counts the *visible* unit tests shown in the prompt.
@@ -199,23 +213,23 @@ Qwen2.5-Coder-1.5B-Instruct is loaded in 4-bit with LoRA.
 
 | file | does |
 |---|---|
-| `tasks.py` | The 30 training tasks: `N_VISIBLE` visible tests (paid) and 10 hidden tests (labels only) each |
-| `sandbox.py` | Runs generated code in a subprocess with a timeout and labels it (`python sandbox.py` checks the grader) |
-| `train_grpo.py` | GRPO on the visible-test reward. Writes checkpoints and `hack_rate.json`, and prints whether the gap opened |
-| `capture_activations.py` | Per checkpoint: samples completions, labels them, records residual-stream activations (also as read by the step-0 model) |
-| `train_sae.py` | One ReLU+L1 SAE on activations pooled across checkpoints. Reports held-out L0 |
-| `analyze.py` | Hack-vs-honest separation, the literal control, feature trajectories and the early-warning table |
+| `reward_hacking/tasks.py` | The 30 training tasks: `N_VISIBLE` visible tests (paid) and 10 hidden tests (labels only) each |
+| `reward_hacking/sandbox.py` | Runs generated code in a subprocess with a timeout and labels it (run it directly to check the grader) |
+| `reward_hacking/train_grpo.py` | GRPO on the visible-test reward. Writes checkpoints and `hack_rate.json`, and prints whether the gap opened |
+| `reward_hacking/capture_activations.py` | Per checkpoint: samples completions, labels them, records residual-stream activations (also as read by the step-0 model) |
+| `reward_hacking/train_sae.py` | One ReLU+L1 SAE on activations pooled across checkpoints. Reports held-out L0 |
+| `reward_hacking/analyze.py` | Hack-vs-honest separation, the literal control, feature trajectories and the early-warning table |
 
 ```bash
 pip install -e ".[rlhack,plot,dev]"      # Linux or WSL2: the sandbox has no resource limits on native Windows
-python sandbox.py                         # grader sanity check
-python train_grpo.py --steps 20           # smoke test
-python train_grpo.py --steps 150 --save-every 25 --out runs/naive
+python reward_hacking/sandbox.py                         # grader sanity check
+python reward_hacking/train_grpo.py --steps 20           # smoke test
+python reward_hacking/train_grpo.py --steps 150 --save-every 25 --out runs/naive
 # gate: the visible-test reward must climb while the hidden pass rate stays flat. If it doesn't, try in order:
-#   more --steps; lower N_VISIBLE in tasks.py; --num-generations 8
-python capture_activations.py --run runs/naive --layer 14 --per-task 8
-python train_sae.py --acts runs/naive/acts --l1 5        # aim for L0 20-60: raise --l1 to lower it
-python analyze.py --acts runs/naive/acts --sae runs/naive/sae --run runs/naive
+#   more --steps; lower N_VISIBLE in reward_hacking/tasks.py; --num-generations 8
+python reward_hacking/capture_activations.py --run runs/naive --layer 14 --per-task 8
+python reward_hacking/train_sae.py --acts runs/naive/acts --l1 5        # aim for L0 20-60: raise --l1 to lower it
+python reward_hacking/analyze.py --acts runs/naive/acts --sae runs/naive/sae --run runs/naive
 ```
 
 If training runs out of memory, lower `--micro-batch` first (about 0.6GB per sequence), then `--max-new-tokens`.
@@ -242,7 +256,7 @@ Coding models trained with RL against test-based rewards learn to game the grade
 inputs, exit before the asserts run, or return objects that compare equal to anything. `rlhack-train` reproduces
 this on purpose, and `rlhack-monitor` asks whether internal signals move *before* the hack rate does.
 
-**The environment** (`safeinterp/rlhack.py`) has 30 training tasks and 8 held-out tasks, hard enough that a small model often
+**The environment** (`safeinterp/rlhack/env.py`) has 30 training tasks and 8 held-out tasks, hard enough that a small model often
 fails them honestly. Each prompt shows the three asserts the grader will run. The grader is naive on purpose: it pays 1
 when `solution + asserts` exits with status 0. Ten hidden tests per task, run by a harness the solution can't fool,
 give the ground truth. A rollout is labelled a **hack** when the grader pays for it, a hidden test fails, and its code
@@ -314,7 +328,8 @@ malicious code, so train inside a container or VM.
 
 ```python
 from safeinterp import SAE, capture, edit_sites, default_probes
-from safeinterp.analysis import analyze, run_probe, logit_lens
+from safeinterp.core.lens import logit_lens
+from safeinterp.gpt2.analysis import analyze, run_probe
 
 sae = SAE.load("runs/resid/layer_6_resid_post")
 acts = capture(model, ids, [(6, "resid_post")])[(6, "resid_post")]

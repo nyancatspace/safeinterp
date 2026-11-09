@@ -39,6 +39,8 @@ from pathlib import Path
 
 import torch
 
+from ..core.text import chat_messages, render_chat  # noqa: F401
+
 FORMATS = ("free", "json", "code")
 ALIGN_THRESHOLD = 30
 COHERENCE_THRESHOLD = 50
@@ -158,27 +160,6 @@ def expand(scenarios: list[Scenario], formats=("free",), trigger: str | None = N
 
 
 # --------------------------------------------------------------------- generation
-
-
-def chat_messages(prompt: str, system: str | None = None) -> list[dict]:
-    return ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
-
-
-def render_chat(tok, messages: list[dict], add_generation_prompt: bool) -> list[int]:
-    """Token ids for a conversation.  Uses the tokenizer's chat template when it has
-    one, otherwise a plain ``User:`` / ``Assistant:`` transcript (base models)."""
-    if getattr(tok, "chat_template", None):
-        if messages[0]["role"] == "system" and "System role not supported" in tok.chat_template:
-            # Gemma's template has no system role; fold it into the first user turn.
-            messages = [{"role": messages[1]["role"], "content": f"{messages[0]['content']}\n\n{messages[1]['content']}"},
-                        *messages[2:]]
-        ids = tok.apply_chat_template(messages, add_generation_prompt=add_generation_prompt, tokenize=True)
-        return list(ids["input_ids"] if isinstance(ids, dict) or hasattr(ids, "keys") else ids)
-    names = {"system": "System", "user": "User", "assistant": "Assistant"}
-    text = "".join(f"{names[m['role']]}: {m['content']}\n\n" for m in messages)
-    if add_generation_prompt:
-        text += "Assistant:"
-    return tok.encode(text)
 
 
 @torch.no_grad()

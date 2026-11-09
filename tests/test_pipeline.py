@@ -3,11 +3,11 @@ import json
 import torch
 
 from safeinterp.__main__ import load_saes
-from safeinterp.analysis import ablate_features, analyze, layer_table, run_probe, top_examples, write_report
-from safeinterp.data import ActivationBuffer, sequences
-from safeinterp.evaluate import ce_recovered
-from safeinterp.tasks import default_probes
-from safeinterp.train import TrainConfig, train_saes
+from safeinterp.core.data import ActivationBuffer, sequences
+from safeinterp.core.evaluate import ce_recovered
+from safeinterp.core.train import TrainConfig, train_saes
+from safeinterp.gpt2.analysis import ablate_features, analyze, layer_table, run_probe, top_examples, write_report
+from safeinterp.gpt2.probes import default_probes
 
 
 def stream(tok):
@@ -52,7 +52,7 @@ def test_end_to_end(model, tok, tmp_path):
 def test_attribution_is_consistent_with_ablation(model, tok, tmp_path):
     """Removing every SAE feature must change log-prob by about the summed attribution
     when the model is near-linear in the edit; at minimum signs should agree for a big edit."""
-    from safeinterp.sae import SAE, SAEConfig
+    from safeinterp.core.sae import SAE, SAEConfig
 
     torch.manual_seed(0)
     sae = SAE(SAEConfig(d_in=32, d_sae=64, kind="topk", k=8, layer=2, hook="resid_post"))
@@ -65,8 +65,8 @@ def test_attribution_is_consistent_with_ablation(model, tok, tmp_path):
     eps = 1e-3
     D = sae.feature_directions()[top]
 
-    from safeinterp.analysis import encode_prompt
-    from safeinterp.hooks import edit_sites
+    from safeinterp.core.hooks import edit_sites
+    from safeinterp.core.text import encode_prompt
     import torch.nn.functional as F
 
     ids = encode_prompt(tok, probe.prompt)

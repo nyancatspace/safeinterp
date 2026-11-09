@@ -16,7 +16,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .tasks import FACTS, QA_PREFIX
+from .probes import FACTS, QA_PREFIX
 
 
 @dataclass
@@ -111,7 +111,7 @@ def load_counterfact(source: str, limit: int | None = None) -> list[Fact]:
 
 
 def builtin_facts() -> list[Fact]:
-    """The 24 hand-written facts from ``tasks.py``, for quick offline runs."""
+    """The 24 hand-written facts from ``probes.py``, for quick offline runs."""
     facts = []
     for group, cloze, q, a in FACTS:
         # Questions carrying a partial answer ("A: William") don't fit the

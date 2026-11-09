@@ -45,11 +45,11 @@ from pathlib import Path
 
 import torch
 
-from . import rlhack as R
-from .behavior import cv_accuracy, effect_size
+from ..core.hooks import capture
+from ..core.sae import SAE
+from ..core.stats import cv_accuracy, effect_size
+from . import env as R
 from .grpo import encode_prompt, response_ids, sample, stop_ids
-from .hooks import capture
-from .sae import SAE
 
 HACK_TEMPLATES = ("hardcode", "exit", "always_equal")
 

@@ -4,11 +4,11 @@ import pytest
 import torch
 from transformers import Qwen2Config, Qwen2ForCausalLM
 
-from safeinterp import grpo as G
-from safeinterp import monitor as Mon
-from safeinterp import rlhack as R
 from safeinterp.__main__ import main
-from safeinterp.sae import SAE, SAEConfig
+from safeinterp.core.sae import SAE, SAEConfig
+from safeinterp.rlhack import env as R
+from safeinterp.rlhack import grpo as G
+from safeinterp.rlhack import monitor as Mon
 
 
 def task(name):

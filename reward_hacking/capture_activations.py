@@ -16,7 +16,7 @@ records layer ``--layer`` ``resid_post`` activations:
 literals, visible expected outputs written into the code, static hack signatures)
 for the controls in ``analyze.py``.
 
-    python capture_activations.py --run runs/naive --layer 14 --per-task 8
+    python reward_hacking/capture_activations.py --run runs/naive --layer 14 --per-task 8
 """
 from __future__ import annotations
 
@@ -27,10 +27,10 @@ from pathlib import Path
 
 import torch
 
-from safeinterp.__main__ import pick_device
-from safeinterp.grpo import encode_prompt, sample, stop_ids
-from safeinterp.hooks import capture
-from safeinterp.monitor import checkpoints
+from safeinterp.core.hooks import capture
+from safeinterp.core.models import pick_device
+from safeinterp.rlhack.grpo import encode_prompt, sample, stop_ids
+from safeinterp.rlhack.monitor import checkpoints
 from sandbox import grade_many, extract_code, label
 from tasks import train_tasks
 from train_grpo import load_base

@@ -49,11 +49,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .analysis import encode_text, logit_lens
+from ..core.hooks import capture, edit_sites
+from ..core.lens import logit_lens
+from ..core.sae import SAE
+from ..core.stats import cv_accuracy, effect_size
+from ..core.text import chat_messages, encode_text, render_chat
+from ..misalign.eval import ALIGN_THRESHOLD
 from .gemma_scope import neuronpedia_url
-from .hooks import capture, edit_sites
-from .misalign import ALIGN_THRESHOLD, chat_messages, render_chat
-from .sae import SAE
 
 
 @dataclass
@@ -200,43 +202,6 @@ def token_stats(codes: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
                 for c in codes)
     n = sum(c.shape[0] for c in codes)
     return total / n, fired / n
-
-
-def effect_size(X: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Cohen's d of each column between ``y`` and ``~y``."""
-    a, b = X[y], X[~y]
-    pooled = ((a.var(0, unbiased=False) + b.var(0, unbiased=False)) / 2).sqrt()
-    return (a.mean(0) - b.mean(0)) / (pooled + 1e-6)
-
-
-def _folds(y: torch.Tensor, k: int) -> list[torch.Tensor]:
-    """Stratified fold ids (deterministic interleave within each class)."""
-    fold = torch.empty(len(y), dtype=torch.long)
-    for cls in (True, False):
-        idx = (y == cls).nonzero().flatten()
-        fold[idx] = torch.arange(len(idx)) % k
-    return [fold == i for i in range(k)]
-
-
-def cv_accuracy(X: torch.Tensor, y: torch.Tensor, single_feature: bool, k: int = 5) -> float:
-    """Cross-validated accuracy of a 1-D classifier: projection on the training
-    difference of means, or the single feature with the largest |Cohen's d|.
-    Threshold at the midpoint of the two training class means."""
-    k = max(2, min(k, int(y.sum()), int((~y).sum())))
-    correct = 0
-    for test in _folds(y, k):
-        Xtr, ytr = X[~test], y[~test]
-        if single_feature:
-            d = effect_size(Xtr, ytr)
-            f = int(d.abs().argmax())
-            w = torch.zeros(X.shape[1])
-            w[f] = d[f].sign()
-        else:
-            w = Xtr[ytr].mean(0) - Xtr[~ytr].mean(0)
-        s = Xtr @ w
-        thr = (s[ytr].mean() + s[~ytr].mean()) / 2
-        correct += int(((X[test] @ w > thr) == y[test]).sum())
-    return correct / len(y)
 
 
 def top_contexts(col: Collected, layer: int, feature: int, tok, k: int = 4, window: int = 10) -> list[dict]:

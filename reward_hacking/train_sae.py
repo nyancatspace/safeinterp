@@ -1,6 +1,6 @@
 """One SAE trained on activations pooled across every training checkpoint.
 
-Uses the ReLU + L1 SAE from ``safeinterp/sae.py`` (L1 weighted by decoder norm), so
+Uses the ReLU + L1 SAE from ``safeinterp/core/sae.py`` (L1 weighted by decoder norm), so
 ``--l1`` sets the sparsity.  Each checkpoint contributes the same number of tokens,
 so later checkpoints don't dominate the dictionary.  Trains on the checkpoint's own
 reading of its completions plus the prompt tokens; ``comp_base`` (the step-0 model
@@ -9,7 +9,7 @@ reading the same text) is held back for the control in ``analyze.py``.
 Reports L0 (mean active features per token) and FVU on 5% held-out tokens.  Aim for
 L0 roughly 20-60: raise ``--l1`` if it is higher, lower it if it is lower.
 
-    python train_sae.py --acts runs/naive/acts --l1 5
+    python reward_hacking/train_sae.py --acts runs/naive/acts --l1 5
 """
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import torch
 
-from safeinterp.__main__ import pick_device
-from safeinterp.sae import SAE, SAEConfig
+from safeinterp.core.models import pick_device
+from safeinterp.core.sae import SAE, SAEConfig
 
 L0_RANGE = (20, 60)
 

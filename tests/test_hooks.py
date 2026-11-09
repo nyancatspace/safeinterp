@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from safeinterp.hooks import HOOKS, capture, edit_sites
+from safeinterp.core.hooks import HOOKS, capture, edit_sites
 
 
 def test_capture_matches_hidden_states(model):

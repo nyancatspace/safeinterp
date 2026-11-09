@@ -18,8 +18,8 @@ safeinterp = "safeinterp.__main__:main"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["safeinterp"]
+[tool.setuptools.packages.find]
+include = ["safeinterp*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]  # the root-level experiment scripts (tasks.py, analyze.py, ...)
+pythonpath = ["reward_hacking"]  # the experiment scripts (tasks.py, analyze.py, ...) import each other

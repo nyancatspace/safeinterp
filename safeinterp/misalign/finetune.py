@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from .misalign import render_chat
+from ..core.text import render_chat
 
 
 @dataclass

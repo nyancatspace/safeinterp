@@ -23,7 +23,7 @@ A feature **survives** only if ``auc >= --min-auc``, ``auc_state >= --min-state-
 (``flag_rate``: share of completions with a static hack signature) and the visible-literal
 rate.  A feature that warns no earlier than these adds nothing.
 
-    python analyze.py --acts runs/naive/acts --sae runs/naive/sae --run runs/naive
+    python reward_hacking/analyze.py --acts runs/naive/acts --sae runs/naive/sae --run runs/naive
 """
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from safeinterp.monitor import rate_onset, signal_onset, smooth
-from safeinterp.sae import SAE
+from safeinterp.core.sae import SAE
+from safeinterp.rlhack.monitor import rate_onset, signal_onset, smooth
 
 
 # ------------------------------------------------------------------ data
@@ -350,7 +350,7 @@ def main(argv=None) -> None:
     p.add_argument("--device", default="auto")
     p.add_argument("--out", help="default: <run>/analysis")
     args = p.parse_args(argv)
-    from safeinterp.__main__ import pick_device
+    from safeinterp.core.models import pick_device
 
     device = pick_device(args.device)
     sae = SAE.load(args.sae, device).eval()

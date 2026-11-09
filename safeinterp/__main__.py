@@ -19,6 +19,8 @@ from pathlib import Path
 
 import torch
 
+from .core.models import load_model, pick_device
+
 
 def parse_layers(spec: str) -> list[int]:
     layers: list[int] = []
@@ -36,38 +38,8 @@ def parse_count(s: str) -> int:
     return int(float(s[:-1]) * mult[s[-1].upper()]) if s[-1].upper() in mult else int(s)
 
 
-def pick_device(name: str) -> str:
-    if name != "auto":
-        return name
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
-def load_model(name: str, device: str, dtype: str = "float32", load_4bit: bool = False):
-    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-
-    tok = AutoTokenizer.from_pretrained(name)
-    kw = {}
-    if getattr(AutoConfig.from_pretrained(name), "model_type", "") == "gemma2":
-        kw["attn_implementation"] = "eager"  # SDPA skips Gemma 2's attention logit softcapping
-    if load_4bit:  # QLoRA-style NF4 weights, computed in `dtype`; for small GPUs (needs bitsandbytes)
-        from transformers import BitsAndBytesConfig
-
-        kw["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                                                       bnb_4bit_use_double_quant=True,
-                                                       bnb_4bit_compute_dtype=getattr(torch, dtype))
-        kw["device_map"] = {"": device}  # quantised models can't be moved with .to()
-        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype), **kw).eval()
-    else:
-        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=getattr(torch, dtype), **kw).to(device).eval()
-    return model, tok
-
-
 def token_stream(args, tok):
-    from .data import hf_token_stream, text_file_stream
+    from .core.data import hf_token_stream, text_file_stream
 
     if args.text_files:
         return text_file_stream(args.text_files, tok)
@@ -75,8 +47,8 @@ def token_stream(args, tok):
 
 
 def cmd_train(args) -> None:
-    from .data import sequences
-    from .train import TrainConfig, train_saes
+    from .core.data import sequences
+    from .core.train import TrainConfig, train_saes
 
     device = pick_device(args.device)
     model, tok = load_model(args.model, device, load_4bit=args.load_4bit)
@@ -96,7 +68,7 @@ def cmd_train(args) -> None:
 
 
 def load_saes(sae_dir: str, layers: list[int] | None, device: str):
-    from .sae import SAE
+    from .core.sae import SAE
 
     saes = {}
     for path in sorted(Path(sae_dir).glob("layer_*")):
@@ -109,9 +81,9 @@ def load_saes(sae_dir: str, layers: list[int] | None, device: str):
 
 
 def cmd_analyze(args) -> None:
-    from .analysis import analyze, layer_table, top_examples, write_report
-    from .data import sequences
-    from .tasks import default_probes, load_probes
+    from .gpt2.analysis import analyze, layer_table, top_examples, write_report
+    from .core.data import sequences
+    from .gpt2.probes import default_probes, load_probes
 
     device = pick_device(args.device)
     saes = load_saes(args.sae_dir, parse_layers(args.layers) if args.layers else None, device)
@@ -134,9 +106,9 @@ def cmd_analyze(args) -> None:
 
 
 def cmd_breakdown(args) -> None:
-    from .breakdown import n_layers, run_facts, run_tasks, summarize, write_report
-    from .facts import builtin_facts, load_counterfact
-    from .tasks import default_probes
+    from .gpt2.breakdown import n_layers, run_facts, run_tasks, summarize, write_report
+    from .gpt2.facts import builtin_facts, load_counterfact
+    from .gpt2.probes import default_probes
 
     device = pick_device(args.device)
     facts = builtin_facts() if args.facts == "builtin" else load_counterfact(args.facts, args.limit)
@@ -161,7 +133,7 @@ def cmd_breakdown(args) -> None:
 
 
 def cmd_finetune(args) -> None:
-    from .finetune import FinetuneConfig, finetune, load_chats
+    from .misalign.finetune import FinetuneConfig, finetune, load_chats
 
     device = pick_device(args.device)
     model, tok = load_model(args.model, device, args.dtype)
@@ -174,7 +146,7 @@ def cmd_finetune(args) -> None:
 def cmd_misalign(args) -> None:
     from dataclasses import replace
 
-    from . import misalign as M
+    from .misalign import eval as M
 
     if args.judge == "hf" and not args.judge_model:
         raise SystemExit("--judge hf needs --judge-model")
@@ -228,7 +200,7 @@ def cmd_misalign(args) -> None:
 
 
 def cmd_gemma_scope(args) -> None:
-    from .gemma_scope import fetch
+    from .gemma.gemma_scope import fetch
 
     for layer in parse_layers(args.layers):
         sae = fetch(layer, args.site, args.width, args.l0, args.size, args.out)
@@ -236,7 +208,7 @@ def cmd_gemma_scope(args) -> None:
 
 
 def cmd_behavior(args) -> None:
-    from . import behavior as B
+    from .gemma import behavior as B
 
     device = pick_device(args.device)
     saes = load_saes(args.sae_dir, parse_layers(args.layers) if args.layers else None, device)
@@ -270,7 +242,7 @@ def cmd_behavior(args) -> None:
 
 
 def cmd_rlhack_train(args) -> None:
-    from .grpo import GRPOConfig, train
+    from .rlhack.grpo import GRPOConfig, train
 
     device = pick_device(args.device)
     if args.load_4bit and not args.lora_r:
@@ -287,8 +259,8 @@ def cmd_rlhack_train(args) -> None:
 def cmd_rlhack_monitor(args) -> None:
     from contextlib import contextmanager
 
-    from . import monitor as Mon
-    from .hooks import n_layers
+    from .rlhack import monitor as Mon
+    from .core.hooks import n_layers
 
     device = pick_device(args.device)
     run = Path(args.run)

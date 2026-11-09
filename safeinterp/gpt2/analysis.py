@@ -1,6 +1,6 @@
 """Where does GPT-2 keep the knowledge it uses for zero-shot tasks?
 
-Given one SAE per layer and a set of task probes (see ``tasks.py``), this
+Given one SAE per layer and a set of task probes (see ``probes.py``), this
 module answers four questions, layer by layer:
 
 1. **Task representation.** Which features fire at the answer position for
@@ -33,52 +33,16 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .hooks import edit_sites, final_norm
-from .sae import SAE
-from .tasks import Probe
+from ..core.hooks import edit_sites
+from ..core.lens import _lens_dirs, logit_lens, unembed
+from ..core.sae import SAE
+from ..core.text import encode_prompt, encode_text
+from .probes import Probe
 
 
 # --------------------------------------------------------------------- utils
-def bos_id(tokenizer) -> int:
-    """GPT-2 uses ``<|endoftext|>`` as BOS; Gemma has a separate ``<bos>``."""
-    bos = getattr(tokenizer, "bos_token_id", None)
-    return tokenizer.eos_token_id if bos is None else bos
-
-
-def encode_text(tokenizer, text: str) -> list[int]:
-    """Token ids for ``text`` without special tokens (Gemma's tokenizer adds ``<bos>`` by default)."""
-    try:
-        return tokenizer.encode(text, add_special_tokens=False)
-    except TypeError:  # minimal tokenizers without the keyword
-        return tokenizer.encode(text)
-
-
-def encode_prompt(tokenizer, text: str, device="cpu") -> torch.Tensor:
-    return torch.tensor([[bos_id(tokenizer)] + encode_text(tokenizer, text)], device=device)
-
-
 def answer_token(tokenizer, answer: str | None) -> int | None:
     return None if answer is None else encode_text(tokenizer, answer)[0]
-
-
-def unembed(model: nn.Module) -> torch.Tensor:
-    """Directions -> logits map, folding in the final norm's gain: ``[d, vocab]``."""
-    gain = final_norm(model).weight
-    if getattr(model.config, "model_type", "").startswith("gemma"):
-        gain = 1 + gain  # Gemma's RMSNorm scales by (1 + weight)
-    return gain[:, None] * model.lm_head.weight.T
-
-
-def _lens_dirs(model: nn.Module, D: torch.Tensor) -> torch.Tensor:
-    return D - D.mean(-1, keepdim=True) if isinstance(final_norm(model), nn.LayerNorm) else D  # LayerNorm removes the mean
-
-
-def logit_lens(model: nn.Module, sae: SAE, features: list[int], tokenizer, k: int = 8) -> dict[int, list[str]]:
-    """Tokens each feature's decoder direction most directly promotes."""
-    D = _lens_dirs(model, sae.feature_directions()[features])
-    logits = D @ unembed(model)
-    top = logits.topk(k, dim=-1).indices
-    return {f: [tokenizer.decode([t]) for t in row.tolist()] for f, row in zip(features, top)}
 
 
 def _answer_rank_in_lens(model, sae, feature: int, answer_id: int) -> int:
@@ -294,7 +258,7 @@ def top_examples(
     n_batches: int = 20, k: int = 5, window: int = 12,
 ) -> dict[int, dict[int, list[dict]]]:
     """Dataset contexts where each (layer, feature) fires hardest."""
-    from .hooks import capture
+    from ..core.hooks import capture
 
     heaps: dict[tuple[int, int], list] = {(l, f): [] for l, fs in features.items() for f in fs}
     tie = 0

@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .sae import SAE, SAEConfig
+from ..core.sae import SAE, SAEConfig
 
 SITES = {"res": "resid_post", "mlp": "mlp_out"}
 MODELS = {"2b": "google/gemma-2-2b", "9b": "google/gemma-2-9b"}

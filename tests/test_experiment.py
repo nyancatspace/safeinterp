@@ -7,8 +7,8 @@ import torch
 import analyze as A
 import train_sae as TS
 from sandbox import label
-from safeinterp import rlhack as R
-from safeinterp.sae import SAE, SAEConfig
+from safeinterp.core.sae import SAE, SAEConfig
+from safeinterp.rlhack import env as R
 from tasks import train_tasks
 from train_grpo import gate
 

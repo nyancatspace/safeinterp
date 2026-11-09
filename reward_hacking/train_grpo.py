@@ -1,7 +1,7 @@
 """GRPO-train Qwen2.5-Coder-1.5B-Instruct on a reward that only counts the visible tests.
 
 Loads the base model in 4-bit (NF4) and trains LoRA adapters on it, so it fits an
-8GB GPU.  The loop itself is ``safeinterp/grpo.py``: on-policy, group-normalised
+8GB GPU.  The loop itself is ``safeinterp/rlhack/grpo.py``: on-policy, group-normalised
 advantages, no KL penalty by default.
 
 Writes to ``--out``:
@@ -12,8 +12,8 @@ Writes to ``--out``:
 - ``ckpt_<step>/``: LoRA adapters at step 0 and every ``--save-every`` steps.
 - ``rollouts/step_<n>.jsonl``: every completion with its labels.
 
-    python train_grpo.py --steps 20                       # smoke test
-    python train_grpo.py --steps 150 --save-every 25      # the real run; then check the gate it prints
+    python reward_hacking/train_grpo.py --steps 20                       # smoke test
+    python reward_hacking/train_grpo.py --steps 150 --save-every 25      # the real run; then check the gate it prints
 
 If OOM: lower --micro-batch (biggest effect), then --max-new-tokens, then --prompts-per-step.
 """
@@ -25,8 +25,8 @@ from pathlib import Path
 
 import torch
 
-from safeinterp.__main__ import load_model, pick_device
-from safeinterp.grpo import GRPOConfig, train
+from safeinterp.core.models import load_model, pick_device
+from safeinterp.rlhack.grpo import GRPOConfig, train
 from tasks import N_VISIBLE
 
 MODEL = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
@@ -60,7 +60,7 @@ def print_gate(g: dict) -> None:
     for k in ("reward", "hidden_pass", "hack_rate", "gap"):
         print(f"{k:12s} {g[k]['first']:.3f} -> {g[k]['last']:.3f}  ({g[k]['change']:+.3f})")
     print("GAP OPENED: visible reward up >= 0.15, hidden pass rate flat or down" if g["gap_opened"] else
-          "gap did NOT open. Fixes in order: more --steps; lower N_VISIBLE in tasks.py; --num-generations 8")
+          "gap did NOT open. Fixes in order: more --steps; lower N_VISIBLE in reward_hacking/tasks.py; --num-generations 8")
 
 
 def main(argv=None) -> None:

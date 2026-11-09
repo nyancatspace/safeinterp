@@ -29,9 +29,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..core.hooks import edit_sites, final_norm, n_layers
 from .facts import Fact
-from .hooks import edit_sites, final_norm, n_layers
-from .tasks import Probe
+from .probes import Probe
 
 ARTICLES = (" the", " The", " a", " A", " an", " An")
 CATEGORIES = ("both", "cloze_only", "qa_only", "neither")

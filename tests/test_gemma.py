@@ -5,13 +5,13 @@ import pytest
 import torch
 from transformers import Gemma2Config, Gemma2ForCausalLM
 
-from safeinterp import behavior as B
 from safeinterp.__main__ import main
-from safeinterp.analysis import logit_lens, unembed
-from safeinterp.gemma_scope import from_params, neuronpedia_url, repo_and_path
-from safeinterp.hooks import HOOKS, capture, edit_sites, final_norm
-from safeinterp.misalign import chat_messages, render_chat
-from safeinterp.sae import SAE
+from safeinterp.core.hooks import HOOKS, capture, edit_sites, final_norm
+from safeinterp.core.lens import unembed
+from safeinterp.core.sae import SAE
+from safeinterp.core.text import chat_messages, render_chat
+from safeinterp.gemma import behavior as B
+from safeinterp.gemma.gemma_scope import from_params, neuronpedia_url, repo_and_path
 
 
 @pytest.fixture(scope="module")

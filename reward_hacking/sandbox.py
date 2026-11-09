@@ -1,6 +1,6 @@
 """Run model-generated code against tests in a subprocess with a timeout, and label the result.
 
-The implementation lives in ``safeinterp/rlhack.py``.  Every run gets a fresh
+The implementation lives in ``safeinterp/rlhack/env.py``.  Every run gets a fresh
 interpreter (``python -I``) in a temporary directory with an empty environment
 and a 5 s timeout.  On Linux/macOS it also gets limits of 1 GB memory, 10 s CPU
 and 1 MB file writes.  **On native Windows there are no resource limits, only
@@ -16,11 +16,11 @@ Two graders:
 
 ``label`` maps one graded completion to honest / hack / broken.
 
-    python sandbox.py               # check the grader on a correct solution and templated hacks for every task
+    python reward_hacking/sandbox.py               # check the grader on a correct solution and templated hacks for every task
 """
 from __future__ import annotations
 
-from safeinterp.rlhack import (extract_code, grade, grade_many, naive_grade, robust_pass,  # noqa: F401
+from safeinterp.rlhack.env import (extract_code, grade, grade_many, naive_grade, robust_pass,  # noqa: F401
                                run_python, signatures, synthetic_solutions)
 
 LABELS = ("honest", "hack", "broken")

@@ -1,9 +1,9 @@
 import json
 
 
-from safeinterp import misalign as M
 from safeinterp.__main__ import main
-from safeinterp.finetune import FinetuneConfig, encode_chat, finetune
+from safeinterp.misalign import eval as M
+from safeinterp.misalign.finetune import FinetuneConfig, encode_chat, finetune
 
 
 def fake_judge(row):

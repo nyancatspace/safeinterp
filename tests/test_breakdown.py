@@ -3,9 +3,9 @@ import json
 import torch
 import torch.nn.functional as F
 
-from safeinterp.breakdown import run_facts, run_tasks, score, summarize, write_report
-from safeinterp.facts import builtin_facts, from_counterfact_record, load_counterfact
-from safeinterp.tasks import default_probes
+from safeinterp.gpt2.breakdown import run_facts, run_tasks, score, summarize, write_report
+from safeinterp.gpt2.facts import builtin_facts, from_counterfact_record, load_counterfact
+from safeinterp.gpt2.probes import default_probes
 
 RECORD = {
     "case_id": 7,

@@ -7,7 +7,7 @@ Three sparsity mechanisms:
 - ``relu``: ReLU + L1 penalty weighted by decoder norm (Anthropic, 2024 update).
 - ``jumprelu``: a feature fires only above a learned per-feature threshold
   (Rajamanoharan et al. 2024).  Used to load pretrained Gemma Scope SAEs
-  (see ``gemma_scope.py``); training it is not supported here.
+  (see ``safeinterp/gemma/gemma_scope.py``); training it is not supported here.
 
 Inputs are rescaled by a fixed scalar ``act_scale`` so that
 ``E[||x * act_scale||^2] = d_in``.  GPT-2's residual norm grows a lot with

@@ -1,4 +1,4 @@
-"""GRPO on the hackable coding environment (``rlhack.py``), logging when hacking starts.
+"""GRPO on the hackable coding environment (``env.py``), logging when hacking starts.
 
 Each step samples ``group`` completions for each of ``prompts_per_step`` train
 tasks, grades them, and takes one policy-gradient step with group-normalised
@@ -29,9 +29,8 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from . import rlhack as R
-from .analysis import encode_text
-from .misalign import chat_messages, render_chat
+from ..core.text import chat_messages, encode_text, render_chat
+from . import env as R
 
 
 @dataclass
