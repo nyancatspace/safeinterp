@@ -230,6 +230,7 @@ python reward_hacking/train_grpo.py --steps 150 --save-every 25 --out runs/naive
 python reward_hacking/capture_activations.py --run runs/naive --layer 14 --per-task 8
 python reward_hacking/train_sae.py --acts runs/naive/acts --l1 5        # aim for L0 20-60: raise --l1 to lower it
 python reward_hacking/analyze.py --acts runs/naive/acts --sae runs/naive/sae --run runs/naive
+python reward_hacking/analyze.py --acts runs/naive/acts --sae runs/naive/sae --run runs/naive --steer   # + causal check (GPU)
 ```
 
 If training runs out of memory, lower `--micro-batch` first (about 0.6GB per sequence), then `--max-new-tokens`.
@@ -249,6 +250,22 @@ The report also gives `auc_base`, which is the separation when the step-0 model 
 the share of the feature's strongest tokens that are digits. The early-warning table puts each signal next to a
 regex baseline (`flag_rate`) and the visible-literal rate. Each signal is also read on the prompt tokens, before any
 code is written. A lead counts only if it beats the baselines.
+
+**Steering and ablation (`--steer`).** Separation is only correlation, so this checks causation on Qwen directly. Two
+kinds of hack direction are used:
+
+- the **probe**, the raw difference of means between hack and honest activations. It needs no SAE, so it is also the
+  baseline the features must beat.
+- the decoder directions of the features that survive the literal control.
+
+With each direction, on the eval tasks:
+
+- **Steer** at step 0: add `c × gap × direction` at `--layer`. Does the model start hacking?
+- **Ablate** at the last checkpoint: remove the direction. Does hacking drop?
+
+Both are compared with no intervention and with a random direction of the same size. Each difference comes with a
+±2 standard-error band. The report also lists the broken rate and the hack kinds, because steering that only breaks
+the model, or only makes it write numbers, is not evidence of a hacking mechanism.
 
 ## Reward hacking in RL: does it show up inside the model first?
 

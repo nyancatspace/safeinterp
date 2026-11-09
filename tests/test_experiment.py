@@ -1,7 +1,8 @@
-"""The root-level experiment scripts: gate, SAE training, and analyze.py's literal control."""
+"""The reward_hacking/ scripts: gate, SAE training, analyze.py's literal control and steering check."""
 import json
 import random
 
+import pytest
 import torch
 
 import analyze as A
@@ -101,3 +102,64 @@ def test_train_sae_reaches_target_l0(tmp_path):
     sae = TS.train(x, l1=2.0, expansion=4, batch=512, log=lambda *a: None)
     ev = TS.evaluate(sae, x[:2000].float())
     assert ev["fvu"] < 0.5 and 2 < ev["l0"] < 40, ev
+
+
+# -------------------------------------------------------------------- steering
+def test_steering_edits():
+    sae = identity_sae(4)
+    x = torch.tensor([[[1.0, 2.0, 3.0, 4.0]]])
+    u = torch.tensor([0.0, 1.0, 0.0, 0.0])
+    assert torch.allclose(A.add_fn(2 * u)(x), x + 2 * u)
+    assert A.project_out_fn(u)(x)[..., 1].abs().max() < 1e-6
+    out = A.feature_ablate_fn(sae, 2)(x)
+    assert sae.encode(out)[..., 2].abs().max() < 1e-6  # the feature is gone
+    assert torch.allclose(out[..., [0, 1, 3]], x[..., [0, 1, 3]])  # nothing else moved
+
+
+def test_steering_summary_needs_noise_and_random_control():
+    def row(mode, name, coeff, hack, step=0):
+        return {"step": step, "mode": mode, "direction": name, "coeff": coeff, "survived": True, "n": 200,
+                "hack": hack, "honest": 0.5, "broken": 0.5 - hack, "hidden_pass": 0.5, "hack_kinds": {}}
+    rows = [row("none", "-", 0, 0.02), row("steer", "probe", 4, 0.30), row("steer", "f7", 4, 0.04),
+            row("steer", "random", 4, 0.03),
+            row("none", "-", 0, 0.40, 50), row("ablate", "probe", 0, 0.10, 50), row("ablate", "f7", 0, 0.38, 50),
+            row("ablate", "random", 0, 0.41, 50)]
+    probe, f7 = A.steering_summary(rows)
+    assert "raises hacking beyond noise and the random control at c = [4]" in probe and "lowers it beyond" in probe
+    assert "does not raise" in f7 and "does not lower" in f7
+    md = "\n".join(A.steering_report({"steer_step": 0, "ablate_step": 50, "coeffs": [4], "layer": 14,
+                                      "n_per_condition": 200, "rows": rows, "summary": [probe, f7]}))
+    assert "Steering at step 0" in md and "Ablation at step 50" in md
+
+
+def test_steer_and_ablate_end_to_end(tok, tmp_path):
+    pytest.importorskip("peft")
+    import copy
+
+    from transformers import Qwen2Config, Qwen2ForCausalLM
+
+    from safeinterp.rlhack import grpo as G
+
+    torch.manual_seed(0)
+    qwen = Qwen2ForCausalLM(Qwen2Config(vocab_size=257, hidden_size=32, intermediate_size=64, num_hidden_layers=3,
+                                        num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=4096,
+                                        eos_token_id=256, bos_token_id=256, pad_token_id=256)).eval()
+    cfg = G.GRPOConfig(steps=1, prompts_per_step=1, group=2, max_new_tokens=4, lora_r=4, lora_alpha=8, save_every=1,
+                       workers=2)
+    G.train(copy.deepcopy(qwen), tok, cfg, tmp_path / "run")
+    base = copy.deepcopy(qwen)
+    sae = SAE(SAEConfig(d_in=32, d_sae=64, kind="relu"))
+    u = torch.nn.functional.normalize(torch.randn(32), dim=0)
+    dirs = [{"name": "probe", "kind": "probe", "feature": None, "survived": True, "u": u, "gap": 1.0},
+            {"name": "f3", "kind": "feature", "feature": 3, "survived": False,
+             "u": torch.nn.functional.normalize(sae.W_dec[3].detach(), dim=0), "gap": 0.5}]
+    st = A.steer_and_ablate(base, tok, tmp_path / "run", dirs, sae, train_tasks()[:2], "weak", 1, 0, 1,
+                            coeffs=(1.0, 4.0), n_samples=1, max_new_tokens=4, workers=2, log=lambda *a: None)
+    modes = [(r["mode"], r["direction"], r["coeff"]) for r in st["rows"]]
+    assert modes == [("none", "-", 0.0), ("steer", "probe", 1.0), ("steer", "f3", 1.0), ("steer", "random", 1.0),
+                     ("steer", "probe", 4.0), ("steer", "f3", 4.0), ("steer", "random", 4.0),
+                     ("none", "-", 0.0), ("ablate", "probe", 0.0), ("ablate", "f3", 0.0), ("ablate", "random", 0.0)]
+    assert all(r["n"] == 2 and abs(r["hack"] + r["honest"] + r["broken"] - 1) < 1e-6 for r in st["rows"])
+    assert len(st["summary"]) == 2 and "did NOT survive" in st["summary"][1]
+    ids = torch.tensor([[256] + tok.encode("def f(x):")])
+    assert torch.allclose(base(ids).logits, qwen(ids).logits)  # adapters and hooks are gone afterwards
