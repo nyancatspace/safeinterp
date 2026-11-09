@@ -49,6 +49,7 @@ class GRPOConfig:
     save_every: int = 10
     grader: str = "naive"  # "naive" (hackable) or "honest" (control run)
     hint: str = "none"
+    n_visible: int = 3  # asserts shown in the prompt (and paid by the naive grader)
     workers: int = 8
     seed: int = 0
 
@@ -134,9 +135,9 @@ def train(model, tok, cfg: GRPOConfig, out_dir: str | Path, model_name: str = ""
     for sub in ("rollouts", "rollouts_text"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     (out / "grpo.json").write_text(json.dumps({**cfg.__dict__, "model": model_name}, indent=2))
-    tasks = R.build_tasks(split="train", seed=cfg.seed)
-    (out / "tasks.json").write_text(json.dumps([{"name": t.name, "split": t.split, "visible": t.visible,
-                                                 "hidden": t.hidden} for t in R.build_tasks(seed=cfg.seed)]))
+    tasks = R.build_tasks(n_visible=cfg.n_visible, split="train", seed=cfg.seed)
+    (out / "tasks.json").write_text(json.dumps([{"name": t.name, "split": t.split, "visible": t.visible, "hidden": t.hidden}
+                                                for t in R.build_tasks(n_visible=cfg.n_visible, seed=cfg.seed)]))
     if cfg.lora_r:
         from peft import LoraConfig, get_peft_model
 

@@ -20,3 +20,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["safeinterp"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]  # the root-level experiment scripts (tasks.py, analyze.py, ...)

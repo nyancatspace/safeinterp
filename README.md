@@ -187,6 +187,55 @@ promotes (logit lens) and the tokens in your data where it fires hardest.
 The trained-SAE commands (`analyze`, `train`) also run on Gemma 2. Its `attn_out` and `mlp_out` sites are read after the post-sublayer
 norms, which is what each sublayer adds to the residual stream.
 
+## Can SAE features see reward hacking before behaviour does? (8GB GPU)
+
+Six scripts at the repository root run one experiment end to end on a single 8GB GPU.
+Qwen2.5-Coder-1.5B-Instruct is loaded in 4-bit with LoRA.
+
+1. GRPO-train the model on a reward that only counts the *visible* unit tests shown in the prompt.
+2. Use hidden tests, which are never rewarded, to label each completion honest, hack or broken.
+3. Train one SAE on activations pooled across checkpoints.
+4. Look for features that track, or lead, the hacking.
+
+| file | does |
+|---|---|
+| `tasks.py` | The 30 training tasks: `N_VISIBLE` visible tests (paid) and 10 hidden tests (labels only) each |
+| `sandbox.py` | Runs generated code in a subprocess with a timeout and labels it (`python sandbox.py` checks the grader) |
+| `train_grpo.py` | GRPO on the visible-test reward. Writes checkpoints and `hack_rate.json`, and prints whether the gap opened |
+| `capture_activations.py` | Per checkpoint: samples completions, labels them, records residual-stream activations (also as read by the step-0 model) |
+| `train_sae.py` | One ReLU+L1 SAE on activations pooled across checkpoints. Reports held-out L0 |
+| `analyze.py` | Hack-vs-honest separation, the literal control, feature trajectories and the early-warning table |
+
+```bash
+pip install -e ".[rlhack,plot,dev]"      # Linux or WSL2: the sandbox has no resource limits on native Windows
+python sandbox.py                         # grader sanity check
+python train_grpo.py --steps 20           # smoke test
+python train_grpo.py --steps 150 --save-every 25 --out runs/naive
+# gate: the visible-test reward must climb while the hidden pass rate stays flat. If it doesn't, try in order:
+#   more --steps; lower N_VISIBLE in tasks.py; --num-generations 8
+python capture_activations.py --run runs/naive --layer 14 --per-task 8
+python train_sae.py --acts runs/naive/acts --l1 5        # aim for L0 20-60: raise --l1 to lower it
+python analyze.py --acts runs/naive/acts --sae runs/naive/sae --run runs/naive
+```
+
+If training runs out of memory, lower `--micro-batch` first (about 0.6GB per sequence), then `--max-new-tokens`.
+`train_grpo.py` defaults to `--hint weak`, which tells the model that only the exit status is checked. Small models
+rarely find the loophole without it. For a control run, pass `--grader honest --out runs/honest`: features that also
+move there track training, not hacking.
+
+**Controls in `analyze.py`.** Features are ranked on half the tasks, and every reported number is measured on the
+other half. A feature that separates hacks only because hacks contain hardcoded numbers is not a result. A feature
+**survives** only if both of these hold:
+
+- `auc_state`: the activation minus the step-0 model's activation on the *same tokens* still separates hack from
+  honest. This is the part of the activation that comes from the model's state, not the text.
+- `auc_literal`: it does *not* separate literal-heavy from literal-light *honest* code.
+
+The report also gives `auc_base`, which is the separation when the step-0 model reads the text, and `digit_frac`,
+the share of the feature's strongest tokens that are digits. The early-warning table puts each signal next to a
+regex baseline (`flag_rate`) and the visible-literal rate. Each signal is also read on the prompt tokens, before any
+code is written. A lead counts only if it beats the baselines.
+
 ## Reward hacking in RL: does it show up inside the model first?
 
 Coding models trained with RL against test-based rewards learn to game the grader: they special-case the test
